@@ -6,7 +6,7 @@ DO $$
     END;
     $$;
 
-CREATE OR REPLACE FUNCTION pg_temp.getNewOperationName(oper_name_val VARCHAR, oper_id_val VARCHAR) RETURNS VARCHAR LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION pg_temp.getNewOperName(oper_name_val VARCHAR, oper_id_val VARCHAR) RETURNS VARCHAR LANGUAGE plpgsql AS $$
     DECLARE
         new_oper_name     ${schema}.UN_OPER.OPERATION_NAME%TYPE;
         oper_count NUMERIC;
@@ -21,7 +21,7 @@ CREATE OR REPLACE FUNCTION pg_temp.getNewOperationName(oper_name_val VARCHAR, op
     END;
     $$;
 
-CREATE OR REPLACE PROCEDURE pg_temp.migrateOperations(proc_uuid VARCHAR, INOUT log_array pg_temp.log_row[]) LANGUAGE plpgsql AS $$
+CREATE OR REPLACE PROCEDURE pg_temp.migrateOper(proc_uuid VARCHAR, INOUT log_array pg_temp.log_row[]) LANGUAGE plpgsql AS $$
     DECLARE
         curs1 REFCURSOR;
         operation_record ${schema}.OPER%ROWTYPE;
@@ -33,7 +33,7 @@ CREATE OR REPLACE PROCEDURE pg_temp.migrateOperations(proc_uuid VARCHAR, INOUT l
             FETCH curs1 INTO operation_record;
             EXIT WHEN NOT FOUND;
             CALL pg_temp.logMessage('INFO', FORMAT('Migrate operation with id: %s', operation_record.ENTITY_ID), proc_uuid, log_array);
-            new_oper_name := pg_temp.getNewOperationName(operation_record.NAME, operation_record.ENTITY_ID);
+            new_oper_name := pg_temp.getNewOperName(operation_record.NAME, operation_record.ENTITY_ID);
 
             select count(*) into exists_uo from ${schema}.UN_OPER uo where uo.operation_name = new_oper_name;
             IF exists_uo = 0 THEN
@@ -64,7 +64,7 @@ CREATE OR REPLACE PROCEDURE pg_temp.migrateOperations(proc_uuid VARCHAR, INOUT l
     END;
     $$;
 
-CREATE OR REPLACE PROCEDURE pg_temp.migratePilotZones(proc_uuid VARCHAR, INOUT log_array pg_temp.log_row[]) LANGUAGE plpgsql AS $$
+CREATE OR REPLACE PROCEDURE pg_temp.migratePZ(proc_uuid VARCHAR, INOUT log_array pg_temp.log_row[]) LANGUAGE plpgsql AS $$
     DECLARE
         pilot_zone_record ${schema}.P_ZN%ROWTYPE;
         operation_record  ${schema}.OPER%ROWTYPE;
@@ -87,7 +87,7 @@ CREATE OR REPLACE PROCEDURE pg_temp.migratePilotZones(proc_uuid VARCHAR, INOUT l
             EXIT WHEN NOT FOUND;
             CALL pg_temp.logMessage('INFO', FORMAT('Migrate pilot zone with id: %s', pilot_zone_record.ENTITY_ID), proc_uuid, log_array);
             SELECT * INTO operation_record FROM ${schema}.OPER op WHERE op.ENTITY_ID = pilot_zone_record.REFERENCE_ID;
-            select pg_temp.getNewOperationName(operation_record.name, oper_inner_record.entity_id)
+            select pg_temp.getNewOperName(operation_record.name, oper_inner_record.entity_id)
                 into new_oper_name;
 
             OPEN curs2 FOR
@@ -177,7 +177,7 @@ CREATE OR REPLACE PROCEDURE pg_temp.migratePilotZones(proc_uuid VARCHAR, INOUT l
                     LOOP
                         FETCH curs3 INTO oper_inner_record;
                         EXIT WHEN NOT FOUND;
-                        select pg_temp.getNewOperationName(oper_inner_record.name, oper_inner_record.entity_id)
+                        select pg_temp.getNewOperName(oper_inner_record.name, oper_inner_record.entity_id)
                         into new_oper_inner_name;
 
                         SELECT * INTO version_record FROM ${schema}.OPER_VERSION ov
@@ -196,7 +196,7 @@ CREATE OR REPLACE PROCEDURE pg_temp.migratePilotZones(proc_uuid VARCHAR, INOUT l
     END;
     $$;
 
-CREATE OR REPLACE PROCEDURE pg_temp.migrateCatalogTenantLinks(proc_uuid VARCHAR, INOUT log_array pg_temp.log_row[]) LANGUAGE plpgsql AS $$
+CREATE OR REPLACE PROCEDURE pg_temp.migrateCatTenLinks(proc_uuid VARCHAR, INOUT log_array pg_temp.log_row[]) LANGUAGE plpgsql AS $$
     DECLARE
         et_record   ${schema}.EN_TEN%ROWTYPE;
         curs1 REFCURSOR;
@@ -217,7 +217,7 @@ CREATE OR REPLACE PROCEDURE pg_temp.migrateCatalogTenantLinks(proc_uuid VARCHAR,
     END;
     $$;
 
-CREATE OR REPLACE PROCEDURE pg_temp.migrateOperationTenantLinks(proc_uuid VARCHAR, INOUT log_array pg_temp.log_row[]) LANGUAGE plpgsql AS $$
+CREATE OR REPLACE PROCEDURE pg_temp.migrateOperTenLinks(proc_uuid VARCHAR, INOUT log_array pg_temp.log_row[]) LANGUAGE plpgsql AS $$
     DECLARE
         et_record        ${schema}.EN_TEN%ROWTYPE;
         new_oper_name    ${schema}.UN_OPER.OPERATION_NAME%TYPE;
@@ -232,7 +232,7 @@ CREATE OR REPLACE PROCEDURE pg_temp.migrateOperationTenantLinks(proc_uuid VARCHA
                                                    et_record.ENTITY_ID, et_record.TENANT_ID), proc_uuid, log_array);
             ---------------------
             SELECT * INTO operation_record FROM ${schema}.OPER op WHERE op.ENTITY_ID = et_record.ENTITY_ID;
-            new_oper_name := pg_temp.getNewOperationName(operation_record.NAME, operation_record.ENTITY_ID);
+            new_oper_name := pg_temp.getNewOperName(operation_record.NAME, operation_record.ENTITY_ID);
             ---------------------
             INSERT INTO ${schema}.UN_OPER_TENANT(OPERATION_TENANT_ID, OPERATION_NAME, TENANT_ID)
             VALUES (UPPER(MD5(new_oper_name || '|' || et_record.TENANT_ID)),
@@ -264,10 +264,10 @@ $$;
 
 DO $$
     DECLARE
-        united_operations_exists NUMERIC:=0;
-        catalog_tenant_links_exists NUMERIC:=0;
-        united_operations_tenant_links_exists NUMERIC:=0;
-        pilot_groups_exists NUMERIC:=0;
+        un_oper_exists NUMERIC:=0;
+        cat_ten_links_exists NUMERIC:=0;
+        un_oper_ten_links_exists NUMERIC:=0;
+        p_g_exists NUMERIC:=0;
         proc_uuid VARCHAR;
         log_array pg_temp.log_row[];
         l pg_temp.log_row;
@@ -275,31 +275,19 @@ DO $$
         select random()::text into proc_uuid;
 
         -- Проверяем, что миграция еще не выполнялась
-        SELECT count(*) INTO united_operations_exists FROM ${schema}.UN_OPER;
-        SELECT count(*) INTO catalog_tenant_links_exists FROM ${schema}.CAT_TEN;
-        SELECT count(*) INTO united_operations_tenant_links_exists FROM ${schema}.UN_OPER_TENANT;
-        SELECT count(*) INTO pilot_groups_exists FROM ${schema}.P_GR;
-        IF (united_operations_exists = 0 AND united_operations_tenant_links_exists = 0 AND
-            catalog_tenant_links_exists = 0 AND pilot_groups_exists = 0) THEN
+        SELECT count(*) INTO un_oper_exists FROM ${schema}.UN_OPER;
+        SELECT count(*) INTO cat_ten_links_exists FROM ${schema}.CAT_TEN;
+        SELECT count(*) INTO un_oper_ten_links_exists FROM ${schema}.UN_OPER_TENANT;
+        SELECT count(*) INTO p_g_exists FROM ${schema}.P_GR;
+        IF (un_oper_exists = 0 AND un_oper_ten_links_exists = 0 AND
+            cat_ten_links_exists = 0 AND p_g_exists = 0) THEN
             ------------------------------------------------------------------------------------------------------------
-            CALL pg_temp.logMessage('INFO', 'Operations migration started', proc_uuid, log_array);
-            CALL pg_temp.migrateOperations(proc_uuid, log_array);
-            CALL pg_temp.logMessage('INFO', 'Operations migration complete', proc_uuid, log_array);
-            ------------------------------------------------------------------------------------------------------------
-            CALL pg_temp.logMessage('INFO', 'Catalog tenant links migration started', proc_uuid, log_array);
-            CALL pg_temp.migrateCatalogTenantLinks(proc_uuid, log_array);
-            CALL pg_temp.logMessage('INFO', 'Catalog tenant links migration complete', proc_uuid, log_array);
-            ------------------------------------------------------------------------------------------------------------
-            CALL pg_temp.logMessage('INFO', 'Operation tenant links migration started', proc_uuid, log_array);
-            CALL pg_temp.migrateOperationTenantLinks(proc_uuid, log_array);
-            CALL pg_temp.logMessage('INFO', 'Operation tenant links migration complete', proc_uuid, log_array);
-            ------------------------------------------------------------------------------------------------------------
-            CALL pg_temp.logMessage('INFO', 'PilotZones migration started', proc_uuid, log_array);
-            CALL pg_temp.migratePilotZones(proc_uuid, log_array);
-            CALL pg_temp.logMessage('INFO', 'PilotZones migration complete', proc_uuid, log_array);
+            CALL pg_temp.logMessage('INFO', 'PZ migration started', proc_uuid, log_array);
+            CALL pg_temp.migratePZ(proc_uuid, log_array);
+            CALL pg_temp.logMessage('INFO', 'PZ migration complete', proc_uuid, log_array);
             ------------------------------------------------------------------------------------------------------------
         ELSE
-            CALL pg_temp.logMessage('WARN', 'Новые таблицы 20.2 уже заполнены данными. Миграция не осуществлена',
+            CALL pg_temp.logMessage('WARN', 'Новые таблицы уже заполнены данными. Миграция не осуществлена',
                 proc_uuid, log_array);
         END IF;
 
